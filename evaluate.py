@@ -70,15 +70,16 @@ TestImgLoader = DataLoader(test_dataset, 1, shuffle=False, num_workers=1, drop_l
 
 
 
-from models.stereonet import StereoNet
+from models.uncertfusionet import SpikeFusionet
 # model, optimizer
-model = __models__[args.model](args.maxdisp)
-#model = StereoNet(1, "subtract", 32)
+
+model = SpikeFusionet(max_disp=160)
+device = torch.device("cuda:{}".format(7))
 #model = nn.DataParallel(model)
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
-device = torch.device("cuda:{}".format(7))
+
 model.to(device)
 
 def test():
@@ -179,9 +180,21 @@ def test_sample(sample, compute_metrics=True):
     return tensor2float(loss), tensor2float(scalar_outputs), image_outputs
 
 
+
+from collections import OrderedDict
+
 def test_spike():
-    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/cfnet/checkpoint_max_cfnetunet.ckpt')
-    model.load_state_dict(state_dict['model'])
+    
+    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/psmnet/checkpoint_max.ckpt')
+    
+    new_state_dict = OrderedDict()
+    for k, v in state_dict["model"].items():
+        name = k[7:] 
+        new_state_dict[name] = v
+
+    
+    
+    model.load_state_dict(new_state_dict)#['model'])
     model.eval()
     #model.eval()
     errors = {"abs_rel_":0, "sq_rel_":0, "rmse_":0, "rmse_log_":0, "a1_":0, "a2_":0,
@@ -203,31 +216,26 @@ def test_spike():
         #disp_ests, pred_s3, pred_s4, pred_depth = model(imgL, imgR)
         
         disp_ests = model(imgL, imgR)["stereo"]
-        depth_ests = model(imgL, imgR)["monocular"]
-        pred_depth = depth_ests
-        disp_ests = disp_ests
-       
-        #pred_depth = pred["fusion"]
-        #disp_ests = pred["stereo"]
-        #pred_depth = pred["monocular"]
-        #pred_depth = disp_ests
-        #print(disp_ests, disp_gt)
-        #pred_depth = (1/(256.0*disp_ests[-1]) + pred_depth)/2.0
+        depth_ests = model(imgL, imgR)["monocular"]["depth"]
+        uncertainty_ests = model(imgL, imgR)["monocular"]["uncertainty"]
+        #mask = np.zeros((256, 512), dtype = np.uint8)
         
+        
+        
+        pred_depth = depth_ests
+        disp_ests = disp_ests     
+
+        uncertainty_ests = np.array(uncertainty_ests.detach().cpu(), dtype = np.float32).squeeze(0)
         disp_ests = np.array(1/disp_ests[-1].detach().cpu(), dtype = np.float32).squeeze(0)
         pred_depth_ = np.array(pred_depth.detach().cpu(), dtype = np.float32).squeeze(0)
         depth_gt_ = np.array(depth_gt.detach().cpu(), dtype = np.float32).squeeze(0)
         disp_gt = np.array(disp_gt.detach().cpu(), dtype = np.float32).squeeze(0)
-        '''
-        disp_ests = np.array(disp_ests.cpu().detach(), dtype = np.float32).squeeze(0)
-        pred_depth_ = np.array(pred_depth.cpu().detach(), dtype = np.float32).squeeze(0)
-        depth_gt_ = np.array(depth_gt.cpu().detach(), dtype = np.float32).squeeze(0)
-        disp_gt = np.array(disp_gt.cpu().detach(), dtype = np.float32).squeeze(0)
-        '''
-        #print(pred_depth)
-        #print(depth_gt)
-        #print(disp_ests)
-        #print(disp_gt)
+        
+        mask = np.zeros((256, 512), dtype=np.uint8)
+        mask[ uncertainty_ests > 0.05 ] =  0
+        mask[ uncertainty_ests <=0.05 ] = 1
+        
+        ##pred_depth_ = (1-mask)*disp_ests + mask*(1+pred_depth_)*128.0    
         
         #abs_rel_, sq_rel_, rmse_, rmse_log_, a1_, a2_ = compute_errors(1/(256*disp_gt), 1/(256*disp_ests))
         abs_rel_, sq_rel_, rmse_, rmse_log_, a1_, a2_ = compute_errors(depth_gt_, disp_ests)
@@ -261,7 +269,23 @@ def test_spike():
     errors["a2"] = errors["a2"] / length
     errors["a2_"] = errors["a2_"] / length
     #errors["a3"] = errors["a3"] / length    
-    #errors["a3_"] = errors["a3_"] / length        
+    #errors["a3_"] = errors["a3_"] / length     
+    
+    abs_rel = errors["abs_rel"]
+    sq_rel = errors["sq_rel"]
+    rmse = errors["rmse"]
+    rmse_log = errors["rmse_log"]
+    a1 = errors["a1"]
+    a2 = errors["a2"]
+    
+    abs_rel_ = errors["abs_rel_"]
+    sq_rel_ = errors["sq_rel_"]
+    rmse_ = errors["rmse_"]
+    rmse_log_ = errors["rmse_log_"]
+    a1_ = errors["a1_"]
+    a2_ = errors["a2_"]    
+    
+       
     print("errors evaluate disparity:\n abs_rel: {}, rmse: {}, sq_rel: {}, rmse_log: {}, a1: {}, a2: {}\n errors evaluate depth:\n abs_rel: {}, rmse: {}, sq_rel: {}, rmse_log: {}, a1:{}, a2:{}".format(
           abs_rel_, rmse_, sq_rel_, rmse_log_, a1_, a2_, abs_rel, rmse, sq_rel, rmse_log, a1, a2))        
         
@@ -335,31 +359,41 @@ def compute_errors_(gt, pred): # for depth
         
                 
 def to_video():
-    device = "cuda:0" 
-    model = __models__['cfnet'](256)
-    estimator = model.to(device)
-    #estimator = torch.nn.DataParallel(estimator)
-    estimator.load_state_dict(torch.load("/home/lijianing/depth/CFNet-mod/logs3/checkpoint_max_JY_3.ckpt")["model"])
     
+    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/psmnet/checkpoint_max.ckpt')
+    
+    new_state_dict = OrderedDict()
+    for k, v in state_dict["model"].items():
+        name = k[7:] 
+        new_state_dict[name] = v
+
+    
+    
+    model.load_state_dict(new_state_dict)#['model'])
+    model.eval()
+    dataset = SpikeDataset(pathr = "/home/Datadisk/spikedata5622/spiking-2022/train/firsthright/", pathl = "/home/Datadisk/spikedata5622/spiking-2022/train/firsthleft/", mode = "training")
     #dataset = SpikeDataset(pathr = "/home/Datadisk/spikedata5622/spiking-2022/test/nrpz/", pathl = "/home/Datadisk/spikedata5622/spiking-2022/test/nlpz/", mode = "train")
-    dataset = JYSpikeDataset(path="/home/Datadisk/spikedata5622/spiking-2022/JYsplit/train/") 
+    #dataset = JYSpikeDataset(path="/home/Datadisk/spikedata5622/spiking-2022/JYsplit/train/") 
     dataloader = DataLoader(dataset, 1, False, pin_memory=True)
     #print(dataset.filesr)
     
-    fps=50
+    fps=20
     fourcc=cv2.VideoWriter_fourcc(*"mp4v")
-    video = cv2.VideoWriter('jy.mp4', cv2.VideoWriter_fourcc(*"mp4v"), fps, (512,256))
+    video = cv2.VideoWriter('unc.mp4', cv2.VideoWriter_fourcc(*"mp4v"), fps, (512,256))
     
     for data in tqdm(dataloader):
         x_l, x_r, real_y, real_d = data["left"].to(device), data["right"].to(device), data["disparity"].to(device), data["depth"].to(device)
         
-        fake_y = estimator(x_l, x_r)["monocular"]#["stereo"][-1]
-
+        #fake_y = model(x_l, x_r)["monocular"]["depth"]#["uncertainty"]#["stereo"][-1]
+        fake_y = model(x_l, x_r)["stereo"][-1]
+        
         #y_map = fake_y[-1].detach().cpu()
         y_map = fake_y.detach().cpu()            
+        #print(y_map.max(), y_map.min())
+        
 
-        y_map = 128*np.array((y_map+1), dtype = np.float32)
-        #y_map = 1/np.array(y_map, dtype = np.float32)
+        #y_map = 128.0*np.array((y_map+1), dtype = np.float32)
+        y_map = 1/np.array(y_map, dtype = np.float32)
         
         y_map[ y_map> 255] = 255
         y_map[ y_map< 0.3] = 0.3
@@ -417,6 +451,7 @@ def addvideo():
 def gt_video():
     device = "cuda:0" 
     #dataset = SpikeDataset(pathr = "/home/Datadisk/spikedata5622/spiking-2022/train/firsthright/", pathl = "/home/Datadisk/spikedata5622/spiking-2022/train/firsthleft/", mode = "train")
+    
     dataset = JYSpikeDataset(path="/home/Datadisk/spikedata5622/spiking-2022/JYsplit/train/") 
     dataloader = DataLoader(dataset, 1, False, pin_memory=True)
     
@@ -437,6 +472,178 @@ def gt_video():
         fig = cv2.applyColorMap(fig, cv2.COLORMAP_MAGMA)
         video.write(fig)    
         
+def validate_spike(model, dataloader):
+    '''
+    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/psmnet/checkpoint_max.ckpt')
+    
+    new_state_dict = OrderedDict()
+    for k, v in state_dict["model"].items():
+        name = k[7:] 
+        new_state_dict[name] = v
+
+    
+    
+    model.load_state_dict(new_state_dict)#['model'])
+    '''
+    model.eval()
+    
+    TestImgLoader = dataloader
+    errors = {"abs_rel_":0, "sq_rel_":0, "rmse_":0, "rmse_log_":0, "a1_":0, "a2_":0,
+    "abs_rel":0, "sq_rel":0, "rmse":0, "rmse_log":0, "a1":0, "a2":0}
+    n = 0
+    length = len(test_dataset)
+    for sample in tqdm(TestImgLoader):
+
+        imgL, imgR, disp_gt, depth_gt = sample['left'], sample['right'], sample['disparity'], sample['depth']
+
+        imgL = imgL.to(device)
+        imgR = imgR.to(device)
+        disp_gt = disp_gt.to(device)
+        depth_gt = depth_gt.to(device)
+        
+
+        pred = model(imgL, imgR)#["fusion"]
+        
+        disp_ests = model(imgL, imgR)["stereo"]
+        depth_ests = model(imgL, imgR)["monocular"]["depth"]
+        uncertainty_ests = model(imgL, imgR)["monocular"]["uncertainty"]
+        
+        
+        pred_depth = depth_ests
+        disp_ests = disp_ests     
+
+        uncertainty_ests = np.array(uncertainty_ests.detach().cpu(), dtype = np.float32).squeeze(0)
+        disp_ests = np.array(1/disp_ests[-1].detach().cpu(), dtype = np.float32).squeeze(0)
+        pred_depth_ = np.array(pred_depth.detach().cpu(), dtype = np.float32).squeeze(0)
+        depth_gt_ = np.array(depth_gt.detach().cpu(), dtype = np.float32).squeeze(0)
+        disp_gt = np.array(disp_gt.detach().cpu(), dtype = np.float32).squeeze(0)
+        
+        #mask = np.zeros((2,256, 512), dtype=np.uint8)
+        
+        uncertainty_ests[uncertainty_ests > 0.5] = 0
+        uncertainty_ests[uncertainty_ests <= 0.5] = 1
+        
+        mask = uncertainty_ests
+        
+        pred_depth_ = (1-mask)*disp_ests + mask*(1+pred_depth_)*128.0    
+        
+
+        abs_rel_, sq_rel_, rmse_, rmse_log_, a1_, a2_ = validate_errors(depth_gt_, disp_ests)
+        abs_rel, sq_rel, rmse, rmse_log, a1, a2 = validate_errors(depth_gt_, pred_depth_) 
+                  
+        
+        errors["abs_rel"] = errors["abs_rel"] + abs_rel
+        errors["abs_rel_"] = errors["abs_rel_"] + abs_rel_
+        errors["rmse"] = errors["rmse"] + rmse
+        errors["rmse_"] = errors["rmse_"] + rmse_
+        
+        errors["sq_rel"] = errors["sq_rel"] + sq_rel
+        errors["sq_rel_"] = errors["sq_rel_"] + sq_rel_
+        errors["rmse_log"] = errors["rmse_log"] + rmse_log
+        errors["rmse_log_"] = errors["rmse_log_"] + rmse_log_
+        errors["a1"] = errors["a1"] + a1
+        errors["a1_"] = errors["a1_"] + a1_
+        errors["a2"] = errors["a2"] + a2
+        errors["a2_"] = errors["a2_"] + a2_
+        
+    errors["abs_rel"] = errors["abs_rel"] / length
+    errors["abs_rel_"] = errors["abs_rel_"] / length
+    errors["rmse"] = errors["rmse"] / length
+    errors["rmse_"] = errors["rmse_"] / length
+        
+    errors["sq_rel"] = errors["sq_rel"] / length
+    errors["sq_rel_"] = errors["sq_rel_"] / length
+    errors["rmse_log"] = errors["rmse_log"] / length
+    errors["rmse_log_"] = errors["rmse_log_"] / length
+    errors["a1"] = errors["a1"] / length
+    errors["a1_"] = errors["a1_"] / length
+    errors["a2"] = errors["a2"] / length
+    errors["a2_"] = errors["a2_"] / length
+    
+    abs_rel = errors["abs_rel"]
+    sq_rel = errors["sq_rel"]
+    rmse = errors["rmse"]
+    rmse_log = errors["rmse_log"]
+    a1 = errors["a1"]
+    a2 = errors["a2"]
+    
+    abs_rel_ = errors["abs_rel_"]
+    sq_rel_ = errors["sq_rel_"]
+    rmse_ = errors["rmse_"]
+    rmse_log_ = errors["rmse_log_"]
+    a1_ = errors["a1_"]
+    a2_ = errors["a2_"]
+         
+    print("errors evaluate disparity:\n abs_rel: {}, rmse: {}, sq_rel: {}, rmse_log: {}, a1: {}, a2: {}\n errors evaluate depth:\n abs_rel: {}, rmse: {}, sq_rel: {}, rmse_log: {}, a1:{}, a2:{}".format(
+          abs_rel_, rmse_, sq_rel_, rmse_log_, a1_, a2_, abs_rel, rmse, sq_rel, rmse_log, a1, a2))        
+        
+    return abs_rel         
+
+
+
+def validate_errors(gt, pred): # for disparity
+   
+     
+    gt = (gt +1.0 ) *128.0
+
+    
+    pred[ pred> 255.0] = 255.0
+    pred[ pred< 2.0] = 2.0
+    
+    gt[gt>255.0] = 255.0
+    gt[gt<2.0] = 2.0
+    
+    #gt[ gt >=100 ] = 0
+    #pred[ pred >=100 ] = 0
+    
+    thresh = np.maximum((gt / pred), (pred / gt))
+    a1 = (thresh < 1.25     ).mean()
+    a2 = (thresh < 1.25 ** 2).mean()
+    a3 = (thresh < 1.25 ** 3).mean()
+
+    rmse = (gt - pred) ** 2
+    rmse = np.sqrt(rmse.mean())
+
+    rmse_log = (np.log(gt) - np.log(pred)) ** 2
+    rmse_log = np.sqrt(rmse_log.mean())
+
+    abs_rel = np.mean(np.abs(gt - pred) / gt)
+
+    sq_rel = np.mean(((gt - pred) ** 2) / gt)
+
+    return abs_rel, sq_rel, rmse, rmse_log, a1, a2,         
+        
+def validate_errors_(gt, pred): # for fusion depth
+   
+     
+    gt = (gt +1.0 ) * 128.0
+    pred = (pred +1.0 )* 128.0
+    
+    pred[ pred> 255.0] = 255.0
+    pred[ pred< 2.0] = 2.0
+    
+    gt[gt>255.0] = 255.0
+    gt[gt<2.0] = 2.0
+    
+    #gt[ gt >=100 ] = 0
+    #pred[ pred >=100 ] = 0
+    
+    thresh = np.maximum((gt / pred), (pred / gt))
+    a1 = (thresh < 1.25     ).mean()
+    a2 = (thresh < 1.25 ** 2).mean()
+    a3 = (thresh < 1.25 ** 3).mean()
+
+    rmse = (gt - pred) ** 2
+    rmse = np.sqrt(rmse.mean())
+
+    rmse_log = (np.log(gt) - np.log(pred)) ** 2
+    rmse_log = np.sqrt(rmse_log.mean())
+
+    abs_rel = np.mean(np.abs(gt - pred) / gt)
+
+    sq_rel = np.mean(((gt - pred) ** 2) / gt)
+
+    return abs_rel, sq_rel, rmse, rmse_log, a1, a2,      
 
 
 if __name__ == '__main__':
