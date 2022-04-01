@@ -35,9 +35,9 @@ parser.add_argument('--datapath', default='/home/lijianing/kitti/', required=Fal
 parser.add_argument('--trainlist', default='/home/lijianing/depth/CFNet-mod/filenames/kitti15_train.txt', required=False, help='training list')
 parser.add_argument('--testlist', default='/home/lijianing/depth/CFNet-mod/filenames/kitti15_val.txt', required=False, help='testing list')
 
-parser.add_argument('--lr', type=float, default=0.001, help='base learning rate')
+parser.add_argument('--lr', type=float, default=0.0003, help='base learning rate')
 parser.add_argument('--batch_size', type=int, default=4, help='training batch size')
-parser.add_argument('--test_batch_size', type=int, default=1, help='testing batch size')
+parser.add_argument('--test_batch_size', type=int, default=2, help='testing batch size')
 parser.add_argument('--epochs', type=int, default=150, required=False, help='number of epochs to train')
 parser.add_argument('--lrepochs', type=str, default='35:3',required=False, help='the epochs to decay lr: the downscale rate')
 
@@ -76,13 +76,10 @@ from models.loss import gcnet_loss, gwc_loss, psm_loss, SL1Loss, unc_loss
 
 model = SpikeFusionet(max_disp=160)
 
-device = torch.device("cuda:{}".format(2))
+device = torch.device("cuda:{}".format(2))  # set main gpu
 
 model = model.to(device)
-'''
-if args.n_gpu > 1:
-    model = torch.nn.DataParallel(model, device_ids=[4,5,6,7])
-'''
+
 with torch.cuda.device([2,7]):
     model = nn.DataParallel(model, [2,7]) 
 #model.cuda()
@@ -90,8 +87,8 @@ with torch.cuda.device([2,7]):
 
             
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
-#state_dict = torch.load('/home/lijianing/depth/CFNet-mod/logs3/checkpoint_max_JY_3.ckpt')
-#model.load_state_dict(state_dict['model'])
+#state_dict = torch.load('/home/lijianing/depth/MMlogs/256/ours/checkpoint_max_3.31.ckpt')
+#model.load_state_dict(state_dict['model'], False)
 
 # load parameters
 start_epoch = 0
@@ -119,7 +116,7 @@ def train():
     error = 100
     for epoch_idx in range(start_epoch, args.epochs):
         adjust_learning_rate(optimizer, epoch_idx, args.lr, args.lrepochs)
-      
+        
         # training
         for batch_idx, sample in enumerate(TrainImgLoader):
             global_step = len(TrainImgLoader) * epoch_idx + batch_idx
@@ -133,19 +130,17 @@ def train():
             print('Epoch {}/{}, Iter {}/{}, train loss = {:.3f}, time = {:.3f}'.format(epoch_idx, args.epochs,
                                                                                        batch_idx,
                                                                                        len(TrainImgLoader), loss,
-                                                                                      time.time() - start_time))
+                                                                                    time.time() - start_time))
         # saving checkpoints
         if (epoch_idx + 1) % args.save_freq == 0:
             checkpoint_data = {'epoch': epoch_idx, 'model': model.module.state_dict(), 'optimizer': optimizer.state_dict()}
-            torch.save(checkpoint_data, "{}/checkpoint_max_3.31.ckpt".format(args.logdir))
+            torch.save(checkpoint_data, "{}/checkpoint_max_4.1_unc.ckpt".format(args.logdir))
         gc.collect()
         
         nowerror = validate_spike(model, dataloader = TestImgLoader)
         
         # testing
 
-        bestepoch = 0
-        error = 100
 
         if  nowerror < error :
             bestepoch = epoch_idx
@@ -153,8 +148,10 @@ def train():
 
         print('MAX epoch %d total test error = %.5f' % (bestepoch, error))
         gc.collect()
-        
     print('MAX epoch %d total test error = %.5f' % (bestepoch, error))
+
+        
+    #print('MAX epoch %d total test error = %.5f' % (bestepoch, error))
 
 
 # train one sample
@@ -181,7 +178,10 @@ def train_sample(epoch, sample, compute_metrics=False):
     disp_ests = ests['stereo']
 
     depth_ests = ests['monocular']
+    fusion_ests = ests['fusion']
 
+    
+    stereo_depth = 1/disp_ests[-1]
     
     mask = (disp_gt < args.maxdisp) & (disp_gt > 0)
 
@@ -189,17 +189,20 @@ def train_sample(epoch, sample, compute_metrics=False):
     loss1 = psm_loss(disp_ests, disp_gt, mask)
 
     loss2 = F.smooth_l1_loss(depth_ests["depth"], depth_gt)
-    loss3 = unc_loss(depth_ests, depth_gt)
-
     
-    if epoch <= 200:
-        loss = loss1 + loss2 + loss3
+    loss3 = unc_loss(depth_ests, depth_gt)
+    #loss4 = F.smooth_l1_loss(fusion_ests, depth_gt)
+    loss4 = F.mse_loss(depth_ests['depth'], stereo_depth)
+    
+    if epoch <= 10:
+        loss = loss1 + loss2 + loss3 #+ loss4
         
-
+    else:
+        loss = loss1 + 0.1 * loss2 + loss3 + loss4
 
 
     scalar_outputs = {"loss": loss}
-    image_outputs = {"disp_est": disp_ests, "disp_gt": disp_gt, "imgL": imgL, "imgR": imgR}
+
 
     loss.backward()
     optimizer.step()

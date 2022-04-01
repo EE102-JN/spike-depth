@@ -74,7 +74,7 @@ from models.uncertfusionet import SpikeFusionet
 # model, optimizer
 
 model = SpikeFusionet(max_disp=160)
-device = torch.device("cuda:{}".format(7))
+device = torch.device("cuda:{}".format(2,7))
 #model = nn.DataParallel(model)
 
 optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
@@ -82,119 +82,21 @@ optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
 model.to(device)
 
-def test():
-    bestepoch = 0
-    error = 100
-    avg_test_scalars = AverageMeterDict()
-    #avg_test_scalars = AverageMeterDict()
-    for epoch_idx in range(0,1):
-        #bestepoch = 0
-        #error = 100
-        for batch_idx, sample in enumerate(TestImgLoader):
-            global_step = len(TestImgLoader) * epoch_idx + batch_idx
-            start_time = time.time()
-            do_summary = global_step % args.summary_freq == 0
-            loss, scalar_outputs, image_outputs = test_sample(sample, compute_metrics=do_summary)
-            if do_summary:
-                save_scalars(logger, 'test', scalar_outputs, global_step)
-                save_images(logger, 'test', image_outputs, global_step)
-            avg_test_scalars.update(scalar_outputs)
-            
-            #transfer to images                                                                             
-            stereo_result = image_outputs["disp_est"][0].detach().cpu().squeeze(0)
-            stereo_np = np.array(255.0*np.array(stereo_result, dtype = np.float32), dtype = np.uint8)
-            stereo_img = Image.fromarray(stereo_np, 'L')
-            stereo_img.save('/home/lijianing/depth/CFNet-mod/results/{}.png'.format(batch_idx))
-            
-            stereo_gt = image_outputs["disp_gt"].detach().cpu().squeeze(0)
-            print(stereo_gt.size())
-            stereo_gt_np = np.array(256*stereo_gt, dtype = np.uint8)
-            stereo_gt_img = Image.fromarray(stereo_gt_np, 'L')
-            stereo_gt_img.save('/home/lijianing/depth/CFNet-mod/results/gt{}.png'.format(batch_idx))   
-                     
-            del scalar_outputs, image_outputs
-            print('Epoch {}/{}, Iter {}/{}, test loss = {:.3f}, time = {:3f}'.format(epoch_idx, args.epochs,
-                                                                                     batch_idx,
-                                                                                     len(TestImgLoader), loss,
-                                                                                     time.time() - start_time))
-                                                                             
-        avg_test_scalars = avg_test_scalars.mean()
-        nowerror = avg_test_scalars["D1"][0]
-        nowdeptherror = avg_test_scalars["Depth_D1"][0]
-        if  nowerror < error :
-            bestepoch = epoch_idx
-            error = avg_test_scalars["D1"][0]
-            depth_error = avg_test_scalars["Depth_D1"][0]
-        save_scalars(logger, 'fulltest', avg_test_scalars, len(TrainImgLoader) * (epoch_idx + 1))
-        print("avg_test_scalars", avg_test_scalars)
-        print("avg_test_scalars_depth", depth_error)
-        print('MAX epoch %d total test error = %.5f' % (bestepoch, error))
-        gc.collect()
-    print('MAX epoch %d total test error = %.5f' % (bestepoch, error))
-
-
-        
-
-
-
-# test one sample
-@make_nograd_func
-def test_sample(sample, compute_metrics=True):
-    model.eval()
-
-    imgL, imgR, disp_gt, depth_gt = sample['left'], sample['right'], sample['disparity'], sample['depth']
-    imgL = imgL.cuda()
-    imgR = imgR.cuda()
-    disp_gt = disp_gt.cuda()
-    depth_gt = depth_gt.cuda()
-    #depth_gt = torch.unsqueeze(1)
-    
-    #print(disp_gt.size(), depth_gt.size())
-    
-    disp_ests, pred_s3, pred_s4, pred_depth = model(imgL, imgR)
-    mask = (disp_gt < args.maxdisp) & (disp_gt > 0)
-    loss = model_loss(disp_ests, disp_gt, mask)
-    #print(torch.max(disp_gt))
-    scalar_outputs = {"loss": loss}
-    #image_outputs = {"disp_est": disp_ests, "disp_gt": disp_gt, "imgL": imgL, "imgR": imgR, "depth_est": pred_depth}
-    
-    scalar_outputs["D1"] = [D1_metric(disp_est, disp_gt, mask) for disp_est in disp_ests]
-    '''
-    #scalar_outputs["Depth_D1"] = [D1_metric(pred_depth, depth_gt, mask)]
-    # scalar_outputs["D1_pred_s2"] = [D1_metric(pred, disp_gt, mask) for pred in pred_s2]
-    scalar_outputs["D1_pred_s3"] = [D1_metric(pred, disp_gt, mask) for pred in pred_s3]
-    scalar_outputs["D1_pred_s4"] = [D1_metric(pred, disp_gt, mask) for pred in pred_s4]
-    scalar_outputs["EPE"] = [EPE_metric(disp_est, disp_gt, mask) for disp_est in disp_ests]
-    scalar_outputs["Thres1"] = [Thres_metric(disp_est, disp_gt, mask, 1.0) for disp_est in disp_ests]
-    scalar_outputs["Thres2"] = [Thres_metric(disp_est, disp_gt, mask, 2.0) for disp_est in disp_ests]
-    scalar_outputs["Thres3"] = [Thres_metric(disp_est, disp_gt, mask, 3.0) for disp_est in disp_ests]
-    
-    #compute depth
-    DE = torch.abs(depth_gt - pred_depth[0])
-    DE = torch.mean(DE)
-    scalar_outputs["Depth_D1"] = [DE]
-    '''
-    #if compute_metrics:
-        #image_outputs["errormap"] = [disp_error_image_func()(disp_est, disp_gt) for disp_est in disp_ests]
-
-    return tensor2float(loss), tensor2float(scalar_outputs), image_outputs
-
-
 
 from collections import OrderedDict
 
 def test_spike():
     
-    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/psmnet/checkpoint_max.ckpt')
-    
+    state_dict = torch.load('/home/lijianing/depth/MMlogs/256/ours/checkpoint_max_3.31.ckpt', map_location='cuda:2')
+    '''
     new_state_dict = OrderedDict()
     for k, v in state_dict["model"].items():
         name = k[7:] 
         new_state_dict[name] = v
 
     
-    
-    model.load_state_dict(new_state_dict)#['model'])
+    '''
+    model.load_state_dict(state_dict['model'])
     model.eval()
     #model.eval()
     errors = {"abs_rel_":0, "sq_rel_":0, "rmse_":0, "rmse_log_":0, "a1_":0, "a2_":0,
@@ -216,24 +118,35 @@ def test_spike():
         #disp_ests, pred_s3, pred_s4, pred_depth = model(imgL, imgR)
         
         disp_ests = model(imgL, imgR)["stereo"]
-        depth_ests = model(imgL, imgR)["monocular"]["depth"]
-        uncertainty_ests = model(imgL, imgR)["monocular"]["uncertainty"]
+        depth_ests = model(imgL, imgR)["monocular"]#["depth"]
+        #uncertainty_ests_mono = model(imgL, imgR)["monocular"]["uncertainty"]
+        uncertainty_ests_ster = model(imgL, imgR)["stereo_uncertainty"]
+        #print(uncertainty_ests_ster)
         #mask = np.zeros((256, 512), dtype = np.uint8)
         
         
-        
-        pred_depth = depth_ests
+        uncertainty_ests_mono = depth_ests["uncertainty"]
+        pred_depth = depth_ests["depth"]
         disp_ests = disp_ests     
 
-        uncertainty_ests = np.array(uncertainty_ests.detach().cpu(), dtype = np.float32).squeeze(0)
+        uncertainty_ests_mono = np.array(uncertainty_ests_mono.detach().cpu(), dtype = np.float32).squeeze(0)
         disp_ests = np.array(1/disp_ests[-1].detach().cpu(), dtype = np.float32).squeeze(0)
         pred_depth_ = np.array(pred_depth.detach().cpu(), dtype = np.float32).squeeze(0)
         depth_gt_ = np.array(depth_gt.detach().cpu(), dtype = np.float32).squeeze(0)
         disp_gt = np.array(disp_gt.detach().cpu(), dtype = np.float32).squeeze(0)
-        
+     
         mask = np.zeros((256, 512), dtype=np.uint8)
-        mask[ uncertainty_ests > 0.05 ] =  0
-        mask[ uncertainty_ests <=0.05 ] = 1
+        mask[ uncertainty_ests_mono > 0.005 ] =  0
+        mask[ uncertainty_ests_mono <=0.005] = 1
+        
+
+        
+        fusion =  mask* (pred_depth_ + 1.0)*128.0 + (1-mask) * disp_ests
+        fusion = (fusion / 128.0) - 1.0
+        pred_depth_ = fusion
+       
+        #pred_depth_ = 0.5*disp_ests + 0.5*(1+pred_depth_)*128.0    
+        #pred_depth_ = (pred_depth_ / 128.0) - 1.0
         
         ##pred_depth_ = (1-mask)*disp_ests + mask*(1+pred_depth_)*128.0    
         
@@ -505,32 +418,34 @@ def validate_spike(model, dataloader):
         pred = model(imgL, imgR)#["fusion"]
         
         disp_ests = model(imgL, imgR)["stereo"]
-        depth_ests = model(imgL, imgR)["monocular"]["depth"]
+        depth_ests = model(imgL, imgR)["monocular"]["depth"]#["fusion"]["depth"]#
         uncertainty_ests = model(imgL, imgR)["monocular"]["uncertainty"]
         
         
         pred_depth = depth_ests
         disp_ests = disp_ests     
 
-        uncertainty_ests = np.array(uncertainty_ests.detach().cpu(), dtype = np.float32).squeeze(0)
-        disp_ests = np.array(1/disp_ests[-1].detach().cpu(), dtype = np.float32).squeeze(0)
-        pred_depth_ = np.array(pred_depth.detach().cpu(), dtype = np.float32).squeeze(0)
-        depth_gt_ = np.array(depth_gt.detach().cpu(), dtype = np.float32).squeeze(0)
-        disp_gt = np.array(disp_gt.detach().cpu(), dtype = np.float32).squeeze(0)
+        uncertainty_ests = np.array(uncertainty_ests.detach().cpu(), dtype = np.float32)#.squeeze(0)
+        disp_ests = np.array(1/disp_ests[-1].detach().cpu(), dtype = np.float32)#.squeeze(0)
+        pred_depth_ = np.array(pred_depth.detach().cpu(), dtype = np.float32)#.squeeze(0)
+        depth_gt_ = np.array(depth_gt.detach().cpu(), dtype = np.float32)#.squeeze(0)
+        disp_gt = np.array(disp_gt.detach().cpu(), dtype = np.float32)#.squeeze(0)
         
         #mask = np.zeros((2,256, 512), dtype=np.uint8)
-        
+        '''
         uncertainty_ests[uncertainty_ests > 0.5] = 0
         uncertainty_ests[uncertainty_ests <= 0.5] = 1
         
         mask = uncertainty_ests
+        '''
+        #pred_depth_ = (1-mask)*disp_ests + mask*(1+pred_depth_)*128.0    
         
-        pred_depth_ = (1-mask)*disp_ests + mask*(1+pred_depth_)*128.0    
+        pred_depth_ = (pred_depth_ + 1.0) * 128.0  
         
-
         abs_rel_, sq_rel_, rmse_, rmse_log_, a1_, a2_ = validate_errors(depth_gt_, disp_ests)
         abs_rel, sq_rel, rmse, rmse_log, a1, a2 = validate_errors(depth_gt_, pred_depth_) 
                   
+         
         
         errors["abs_rel"] = errors["abs_rel"] + abs_rel
         errors["abs_rel_"] = errors["abs_rel_"] + abs_rel_
@@ -588,14 +503,12 @@ def validate_errors(gt, pred): # for disparity
 
     
     pred[ pred> 255.0] = 255.0
-    pred[ pred< 2.0] = 2.0
+    pred[ pred< 0.3] = 0.3
     
     gt[gt>255.0] = 255.0
-    gt[gt<2.0] = 2.0
-    
-    #gt[ gt >=100 ] = 0
-    #pred[ pred >=100 ] = 0
-    
+    gt[gt<0.3] = 0.3
+
+
     thresh = np.maximum((gt / pred), (pred / gt))
     a1 = (thresh < 1.25     ).mean()
     a2 = (thresh < 1.25 ** 2).mean()
@@ -620,13 +533,11 @@ def validate_errors_(gt, pred): # for fusion depth
     pred = (pred +1.0 )* 128.0
     
     pred[ pred> 255.0] = 255.0
-    pred[ pred< 2.0] = 2.0
+    pred[ pred< 0.3] = 0.3
     
     gt[gt>255.0] = 255.0
-    gt[gt<2.0] = 2.0
-    
-    #gt[ gt >=100 ] = 0
-    #pred[ pred >=100 ] = 0
+    gt[gt<0.3] = 0.3
+
     
     thresh = np.maximum((gt / pred), (pred / gt))
     a1 = (thresh < 1.25     ).mean()
