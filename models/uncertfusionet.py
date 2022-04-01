@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from models.submodule import *
 
+device = torch.device("cuda:{}".format(2))
 
 class SpikeFusionet(nn.Module):
 
@@ -56,15 +57,62 @@ class SpikeFusionet(nn.Module):
                 cost_volume[:, :C, i, :, :] = left_cost
                 cost_volume[:, C:, i, :, :] = right_cost
 
-        disp1, disp2, disp3 = self.stackedhourglass(cost_volume, out_size=original_size)
+        disp1, disp2, disp3, unc3 = self.stackedhourglass(cost_volume, out_size=original_size)
+        if self.training or self.eval:
+            disp3 = disp3.unsqueeze(1)
+            disp3 = F.upsample(disp3, [256,512], mode='bilinear', align_corners=True).squeeze(1)
+            
+            mono_uncert = right_depth["uncertainty"]
+            ster_uncert = unc3[0]
+ 
+            
+            C, H, W = mono_uncert.size()
+            mask_dual = torch.zeros((C,H,W), dtype=torch.float, requires_grad=True).cuda()#.to(device)#cuda()
+            
+            mask_dual[  ster_uncert >= 0.5  ] = mask_dual[  ster_uncert >= 0.5  ] + 0
+            mask_dual[  ster_uncert < 0.5  ]  = mask_dual[  ster_uncert < 0.5  ] + 1
+            
+            mask_dual[  mono_uncert <= 0.005  ]  = mask_dual[  mono_uncert <= 0.005  ] + 2
+            mask_dual[  mono_uncert > 0.005  ]  = mask_dual[  mono_uncert > 0.005  ] + 0
+            
+            
+            mask_dual = mask_dual / 2
+            
+            mask_dual[ mask_dual == 1.5] = 0.5 
+            mask_dual[ mask_dual == 1] = 0 
+            mask_dual[ mask_dual == 0.5] = 1 
+            mask_dual[ mask_dual == 0] = 0.5 
+            
+            print(len(mask_dual[mask_dual == 0.5]))
+            
+            '''
+            mask_dual[ mono_uncert <= 0.01 and  ster_uncert < 0.3] = 1
+            mask_dual[ mono_uncert > 0.01 and ster_uncert >= 0.3 ] = 0
+            mask_dual[ mono_uncert > 0.01 and ster_uncert < 0.3 ] = 0.5
+            '''
+            fusion = mask_dual * right_depth["depth"] + (1-mask_dual) * (1 / disp3)
+            fusion = (fusion / 128.0) - 1.0
+            
+            '''
+            mask_mono[ mono_uncert > 0.005 ] = 0
+            mask_mono[ mono_uncert <=0.005 ] = 1
+            
+            
+            fusion =  mask_mono* (right_depth["depth"] + 1.0)*128.0 + (1-mask_mono) * (1 / disp3) 
+            fusion = (fusion / 128.0) - 1.0
 
-        disp3 = disp3.unsqueeze(1)
-        disp3 = F.upsample(disp3, [256,512], mode='bilinear', align_corners=True).squeeze(1)
-        result = {}
-        result["monocular"] = right_depth
-        result["stereo"] = [disp1, disp2, disp3] 
+            '''
+  
+            
+            result = {}
+            result["monocular"] = right_depth
+            result["stereo"] = [disp1, disp2, disp3] 
+            result["stereo_uncertainty"]= unc3[0]
+            result["fusion"] = fusion
+
+        
         return result
-    
+
     def __init_params(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -349,12 +397,12 @@ class StackedHourglass(nn.Module):
         prob2 = F.softmax(-cost2, dim=1)
         prob3 = F.softmax(-cost3, dim=1)
 
-        disp1 = self.regression(prob1)
-        disp2 = self.regression(prob2)
-        disp3 = self.regression(prob3)
+        disp1, unc1 = self.regression(prob1)
+        disp2, unc2 = self.regression(prob2)
+        disp3, unc3 = self.regression(prob3)
         
         
-        return disp1, disp2, disp3
+        return disp1, disp2, disp3, unc3
 
 
 class DisparityRegression(nn.Module):
@@ -368,7 +416,10 @@ class DisparityRegression(nn.Module):
     def forward(self, prob):
         disp_score = self.disp_score.expand_as(prob).type_as(prob)  # [B, D, H, W]
         out = torch.sum(disp_score * prob, dim=1) / 256  # [B, H, W], 256 add
-        return out
+        
+        out_uncert = torch.max(prob, dim=1) #torch.sum(prob * torch.log(prob), dim=1)#.mean() 
+        
+        return out, out_uncert
 
 
 class Hourglass(nn.Module):
