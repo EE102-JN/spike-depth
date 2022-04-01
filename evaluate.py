@@ -404,7 +404,7 @@ def validate_spike(model, dataloader):
     errors = {"abs_rel_":0, "sq_rel_":0, "rmse_":0, "rmse_log_":0, "a1_":0, "a2_":0,
     "abs_rel":0, "sq_rel":0, "rmse":0, "rmse_log":0, "a1":0, "a2":0}
     n = 0
-    length = len(test_dataset)
+    length = len(test_dataset) / 2
     for sample in tqdm(TestImgLoader):
 
         imgL, imgR, disp_gt, depth_gt = sample['left'], sample['right'], sample['disparity'], sample['depth']
