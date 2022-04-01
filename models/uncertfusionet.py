@@ -83,7 +83,7 @@ class SpikeFusionet(nn.Module):
             mask_dual[ mask_dual == 0.5] = 1 
             mask_dual[ mask_dual == 0] = 0.5 
             
-            print(len(mask_dual[mask_dual == 0.5]))
+            #print(len(mask_dual[mask_dual == 0.5]))
             
             '''
             mask_dual[ mono_uncert <= 0.01 and  ster_uncert < 0.3] = 1
